@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: Format check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # eBPF-touching crates commonly need a nightly toolchain + rust-src to
+      # build the bpf target (e.g. via the `aya` ecosystem). Uncomment and
+      # adjust once the eBPF crate(s) land:
+      # - uses: dtolnay/rust-toolchain@nightly
+      #   with:
+      #     components: rust-src
+      # - run: cargo install bpf-linker
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: Build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --verbose
+      - run: cargo test --workspace --verbose
+
+  # eBPF programs must be verified/loaded on Linux with elevated capabilities.
+  # This job is a placeholder — enable once there's something to attach and
+  # a safe, self-contained target (e.g. a loopback interface or a synthetic
+  # packet source) to test against in CI.
+  # ebpf-smoke-test:
+  #   name: eBPF load/attach smoke test
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - run: sudo ./scripts/ci-smoke-test.sh
