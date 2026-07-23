@@ -17,7 +17,8 @@ Once tagged releases begin, this table will be updated to track supported releas
 Instead, please report privately using one of these channels:
 
 1. **GitHub Private Vulnerability Reporting** (preferred): go to the repository's **Security** tab → **Report a vulnerability**. This creates a private advisory visible only to maintainers.
-2. If that's unavailable, open a draft security advisory or contact the maintainer directly via the email listed on the [maintainer's GitHub profile](https://github.com/HimanshuPathak2725).
+2. **Email**: security@vaporwall.dev — a monitored private channel for security reports.
+3. If the above are unavailable, open a draft security advisory or contact the maintainer directly via the email listed on the [maintainer's GitHub profile](https://github.com/HimanshuPathak2725).
 
 ### What to include
 
