@@ -36,7 +36,9 @@ jobs:
       #     components: rust-src
       # - run: cargo install bpf-linker
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --exclude vaporwall-ebpf --all-targets --all-features -- -D warnings
+      - name: Clippy (eBPF crate, its own target)
+        run: cd vaporwall-ebpf && cargo clippy -- -D warnings
 
   test:
     name: Build & test
