@@ -864,6 +864,7 @@ dependencies = [
  "ctrlc",
  "env_logger",
  "log",
+ "vaporwall-common",
 ]
 
 [[package]]
@@ -878,6 +879,7 @@ name = "vaporwall-ebpf"
 version = "0.1.0"
 dependencies = [
  "aya-ebpf",
+ "vaporwall-common",
 ]
 
 [[package]]
