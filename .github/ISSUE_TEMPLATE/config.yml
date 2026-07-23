@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/HimanshuPathak2725/VaporWall/security/advisories/new
+    about: Please report vulnerabilities privately — see SECURITY.md. Do not use a public issue.
+  - name: Questions & discussion
+    url: https://github.com/HimanshuPathak2725/VaporWall/discussions
+    about: Ask usage questions or start a design discussion here rather than as a bug/feature issue.
