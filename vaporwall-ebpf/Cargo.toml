@@ -1,0 +1,8 @@
+[package]
+name = "vaporwall-ebpf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aya-ebpf = "0.1"
+vaporwall-common = { path = "../vaporwall-common" }
