@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 aya-ebpf = "0.2"
+vaporwall-common = { path = "../vaporwall-common" }
 
 [[bin]]
 name = "vaporwall"
