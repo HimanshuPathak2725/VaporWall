@@ -31,7 +31,9 @@ fn main() -> anyhow::Result<()> {
 
     let program: &mut Xdp = bpf
         .program_mut("vaporwall")
-        .context("program 'vaporwall' not found in compiled object — name mismatch with #[xdp] fn?")?
+        .context(
+            "program 'vaporwall' not found in compiled object — name mismatch with #[xdp] fn?",
+        )?
         .try_into()?;
 
     program
@@ -43,9 +45,9 @@ fn main() -> anyhow::Result<()> {
     // tied to *this* handle, not to the process or the Ebpf struct's Drop impl.
     // If we don't hold and explicitly detach this, the program can outlive our
     // process on the interface (as we just saw: `prog/xdp id 103` survived Ctrl-C).
-    let link_id = program
-        .attach(&opt.iface, XdpFlags::SKB_MODE)
-        .context("failed to attach XDP program — do you have CAP_BPF/CAP_NET_ADMIN? try running with sudo")?;
+    let link_id = program.attach(&opt.iface, XdpFlags::SKB_MODE).context(
+        "failed to attach XDP program — do you have CAP_BPF/CAP_NET_ADMIN? try running with sudo",
+    )?;
 
     info!(
         "VaporWall XDP program attached on '{}' (SKB mode). Ctrl-C to detach and exit.",

@@ -24,9 +24,9 @@ fn build_ebpf(release: bool) -> Result<()> {
         cmd.arg("--release");
     }
 
-    let status = cmd
-        .status()
-        .context("failed to spawn cargo build for vaporwall-ebpf — is nightly toolchain installed?")?;
+    let status = cmd.status().context(
+        "failed to spawn cargo build for vaporwall-ebpf — is nightly toolchain installed?",
+    )?;
 
     if !status.success() {
         anyhow::bail!("eBPF build failed with status: {status}");
