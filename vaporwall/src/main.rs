@@ -9,9 +9,8 @@ use clap::Parser;
 use log::info;
 use std::convert::TryInto;
 use std::net::Ipv4Addr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::os::fd::AsRawFd;
+use tokio::io::unix::AsyncFd;
 use vaporwall_common::PacketEvent;
 
 #[derive(Parser)]
@@ -21,7 +20,8 @@ struct Opt {
     iface: String,
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     env_logger::init();
     let opt = Opt::parse();
 
@@ -33,10 +33,6 @@ fn main() -> anyhow::Result<()> {
     let mut bpf = Ebpf::load(bytes)
         .context("failed to load eBPF object — did you run `cargo xtask build-ebpf` first?")?;
 
-    // Scoped block: the `&mut Xdp` borrow of `bpf` created here lives only
-    // until the end of this block. Once `link_id` is returned out, the borrow
-    // is released — this is what lets us call `bpf.take_map(...)` right after,
-    // which otherwise conflicts (E0499: cannot borrow `bpf` as mutable twice).
     let link_id = {
         let program: &mut Xdp = bpf
             .program_mut("vaporwall")
@@ -59,49 +55,77 @@ fn main() -> anyhow::Result<()> {
         opt.iface
     );
 
-    let mut ring_buf: RingBuf<_> = bpf
+    let ring_buf: RingBuf<_> = bpf
         .take_map("EVENTS")
         .context("EVENTS map not found — name must match the #[map] static in vaporwall-ebpf")?
         .try_into()
         .context("EVENTS map is not a RingBuf — type mismatch between kernel and user space")?;
 
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-    ctrlc::set_handler(move || r.store(false, Ordering::SeqCst))
-        .context("failed to set Ctrl-C handler")?;
+    // Wrap the ring buffer's raw fd so Tokio's epoll-backed reactor can wake
+    // us only when the kernel actually has new data — no more 10ms busy-poll.
+    // This is the whole point of Phase 3's async upgrade: idle CPU usage
+    // drops to ~zero instead of constantly re-checking an empty ring.
+    let raw_fd = ring_buf.as_raw_fd();
+    let async_fd =
+        AsyncFd::new(raw_fd).context("failed to register ring buffer fd with the async reactor")?;
+    // ring_buf must stay alive and mutable for draining below; re-bind as mut
+    // now that we've captured its fd separately.
+    let mut ring_buf = ring_buf;
 
-    info!("Polling ring buffer for packet events...");
+    info!("Polling ring buffer for packet events (epoll-driven)...");
 
-    while running.load(Ordering::SeqCst) {
-        while let Some(item) = ring_buf.next() {
-            if item.len() != core::mem::size_of::<PacketEvent>() {
-                log::warn!(
-                    "ring buffer entry size mismatch: got {} bytes, expected {}",
-                    item.len(),
-                    core::mem::size_of::<PacketEvent>()
-                );
-                continue;
+    let shutdown = tokio::signal::ctrl_c();
+    tokio::pin!(shutdown);
+
+    loop {
+        tokio::select! {
+            // Kernel says the ring buffer fd is readable: drain everything
+            // currently available before going back to sleep.
+            guard_result = async_fd.readable() => {
+                let mut guard = guard_result
+                    .context("async_fd reactor error while waiting for ring buffer readiness")?;
+
+                while let Some(item) = ring_buf.next() {
+                    if item.len() != core::mem::size_of::<PacketEvent>() {
+                        log::warn!(
+                            "ring buffer entry size mismatch: got {} bytes, expected {}",
+                            item.len(),
+                            core::mem::size_of::<PacketEvent>()
+                        );
+                        continue;
+                    }
+                    // SAFETY: PacketEvent is #[repr(C)] with no padding
+                    // ambiguity, and both vaporwall-ebpf and vaporwall share
+                    // this exact definition via vaporwall-common — sound
+                    // reinterpretation of kernel-submitted bytes.
+                    let event: PacketEvent =
+                        unsafe { core::ptr::read_unaligned(item.as_ptr() as *const PacketEvent) };
+
+                    info!(
+                        "{}:{} -> {}:{} proto={} len={}",
+                        Ipv4Addr::from(event.src_ip),
+                        event.src_port,
+                        Ipv4Addr::from(event.dst_ip),
+                        event.dst_port,
+                        event.protocol,
+                        event.payload_len
+                    );
+                }
+
+                // Tell the reactor we've drained the ring; re-arm for the
+                // next wakeup. Without this, we'd never be notified again.
+                guard.clear_ready();
             }
-            let event: PacketEvent =
-                unsafe { core::ptr::read_unaligned(item.as_ptr() as *const PacketEvent) };
-
-            info!(
-                "{}:{} -> {}:{} proto={} len={}",
-                Ipv4Addr::from(event.src_ip),
-                event.src_port,
-                Ipv4Addr::from(event.dst_ip),
-                event.dst_port,
-                event.protocol,
-                event.payload_len
-            );
+            // Ctrl-C: break out of the loop cleanly rather than being killed
+            // mid-iteration, so the detach logic below always runs.
+            _ = &mut shutdown => {
+                info!("Ctrl-C received, shutting down...");
+                break;
+            }
         }
-        std::thread::sleep(Duration::from_millis(10));
     }
 
     info!("Detaching XDP program from '{}'...", opt.iface);
-    // Fresh borrow of `program` here — the earlier borrow already ended when
-    // its enclosing block closed above, so this is a brand new, non-conflicting
-    // mutable borrow of `bpf`.
     let program: &mut Xdp = bpf
         .program_mut("vaporwall")
         .context("program disappeared?")?

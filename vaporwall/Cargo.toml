@@ -9,5 +9,6 @@ anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
 log = "0.4"
 env_logger = "0.11"
-ctrlc = "3.4"
 vaporwall-common = { path = "../vaporwall-common", features = ["user"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
+aho-corasick = "1"
