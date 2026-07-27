@@ -28,14 +28,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      # eBPF-touching crates commonly need a nightly toolchain + rust-src to
-      # build the bpf target (e.g. via the `aya` ecosystem). Uncomment and
-      # adjust once the eBPF crate(s) land:
-      # - uses: dtolnay/rust-toolchain@nightly
-      #   with:
-      #     components: rust-src
-      # - run: cargo install bpf-linker
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - name: Install bpf-linker
+        run: cargo install bpf-linker
       - uses: Swatinem/rust-cache@v2
+      - name: Build eBPF bytecode
+        # Required before building/clippy-ing vaporwall: it embeds this
+        # bytecode at compile time via include_bytes_aligned!, so the file
+        # must already exist on disk before vaporwall is touched at all.
+        run: cargo run -p xtask -- build-ebpf
       - run: cargo clippy --workspace --exclude vaporwall-ebpf --all-targets --all-features -- -D warnings
       - name: Clippy (eBPF crate, its own target)
         run: cd vaporwall-ebpf && cargo clippy -- -D warnings
@@ -46,7 +49,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - name: Install bpf-linker
+        run: cargo install bpf-linker
       - uses: Swatinem/rust-cache@v2
+      - name: Build eBPF bytecode
+        run: cargo run -p xtask -- build-ebpf
       - run: cargo build --workspace --exclude vaporwall-ebpf --verbose
       - run: cargo test --workspace --exclude vaporwall-ebpf --verbose
 
