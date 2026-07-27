@@ -31,6 +31,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
+          default: false
       - name: Install bpf-linker
         run: cargo install bpf-linker
       - uses: Swatinem/rust-cache@v2
@@ -52,6 +53,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
+          default: false
       - name: Install bpf-linker
         run: cargo install bpf-linker
       - uses: Swatinem/rust-cache@v2
