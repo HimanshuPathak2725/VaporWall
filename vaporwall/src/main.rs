@@ -1,3 +1,4 @@
+use aho_corasick::AhoCorasick;
 use anyhow::Context;
 use aya::{
     include_bytes_aligned,
@@ -6,7 +7,7 @@ use aya::{
     Ebpf,
 };
 use clap::Parser;
-use log::info;
+use log::{info, warn};
 use std::convert::TryInto;
 use std::net::Ipv4Addr;
 use std::os::fd::AsRawFd;
@@ -20,10 +21,33 @@ struct Opt {
     iface: String,
 }
 
+/// Placeholder MVP signature set. These are deliberately generic/testable
+/// strings, not real threat signatures — the point of this phase is proving
+/// the Aho-Corasick fast path wires up end-to-end (automaton build once,
+/// scan every packet's payload snippet in a single pass). Real signatures
+/// (SQLi tokens, shellcode NOP sleds, known exploit headers) come from the
+/// `rules/signatures.txt` file referenced in the README, which is a later
+/// phase's concern — loading and hot-reloading a rules file is a separate
+/// piece of work from the matching engine itself.
+const TEST_SIGNATURES: &[&str] = &["EVIL_PAYLOAD", "malicious_string", "/etc/passwd"];
+
+/// Builds the Aho-Corasick automaton once at startup. Building is the
+/// expensive part (proportional to total pattern bytes); matching against
+/// it afterward is fast and does not re-walk the pattern set per packet.
+fn build_signature_matcher() -> anyhow::Result<AhoCorasick> {
+    AhoCorasick::new(TEST_SIGNATURES).context("failed to build Aho-Corasick automaton")
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
     let opt = Opt::parse();
+
+    let matcher = build_signature_matcher()?;
+    info!(
+        "Signature matcher loaded with {} pattern(s)",
+        TEST_SIGNATURES.len()
+    );
 
     #[cfg(debug_assertions)]
     let bytes = include_bytes_aligned!("../../target/bpfel-unknown-none/debug/vaporwall");
@@ -61,15 +85,9 @@ async fn main() -> anyhow::Result<()> {
         .try_into()
         .context("EVENTS map is not a RingBuf — type mismatch between kernel and user space")?;
 
-    // Wrap the ring buffer's raw fd so Tokio's epoll-backed reactor can wake
-    // us only when the kernel actually has new data — no more 10ms busy-poll.
-    // This is the whole point of Phase 3's async upgrade: idle CPU usage
-    // drops to ~zero instead of constantly re-checking an empty ring.
     let raw_fd = ring_buf.as_raw_fd();
     let async_fd =
         AsyncFd::new(raw_fd).context("failed to register ring buffer fd with the async reactor")?;
-    // ring_buf must stay alive and mutable for draining below; re-bind as mut
-    // now that we've captured its fd separately.
     let mut ring_buf = ring_buf;
 
     info!("Polling ring buffer for packet events (epoll-driven)...");
@@ -79,8 +97,6 @@ async fn main() -> anyhow::Result<()> {
 
     loop {
         tokio::select! {
-            // Kernel says the ring buffer fd is readable: drain everything
-            // currently available before going back to sleep.
             guard_result = async_fd.readable() => {
                 let mut guard = guard_result
                     .context("async_fd reactor error while waiting for ring buffer readiness")?;
@@ -110,14 +126,28 @@ async fn main() -> anyhow::Result<()> {
                         event.protocol,
                         event.payload_len
                     );
+
+                    // Fast-path scan: only the captured snippet, only up to
+                    // the kernel-reported valid length (trailing bytes in
+                    // the fixed-size array are zero-padding, not real data).
+                    let snippet_len = (event.snippet_len as usize).min(event.payload_snippet.len());
+                    let snippet = &event.payload_snippet[..snippet_len];
+
+                    if let Some(mat) = matcher.find(snippet) {
+                        let pattern = TEST_SIGNATURES[mat.pattern().as_usize()];
+                        warn!(
+                            "SIGNATURE MATCH: pattern=\"{}\" src={}:{} dst={}:{}",
+                            pattern,
+                            Ipv4Addr::from(event.src_ip),
+                            event.src_port,
+                            Ipv4Addr::from(event.dst_ip),
+                            event.dst_port
+                        );
+                    }
                 }
 
-                // Tell the reactor we've drained the ring; re-arm for the
-                // next wakeup. Without this, we'd never be notified again.
                 guard.clear_ready();
             }
-            // Ctrl-C: break out of the loop cleanly rather than being killed
-            // mid-iteration, so the detach logic below always runs.
             _ = &mut shutdown => {
                 info!("Ctrl-C received, shutting down...");
                 break;
