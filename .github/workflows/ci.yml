@@ -47,8 +47,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace --verbose
-      - run: cargo test --workspace --verbose
+      - run: cargo build --workspace --exclude vaporwall-ebpf --verbose
+      - run: cargo test --workspace --exclude vaporwall-ebpf --verbose
 
   # eBPF programs must be verified/loaded on Linux with elevated capabilities.
   # This job is a placeholder — enable once there's something to attach and
