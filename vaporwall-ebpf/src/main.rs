@@ -15,6 +15,10 @@ const ETH_HDR_LEN: usize = 14;
 const IPV4_HDR_LEN: usize = 20; // no-options case only, see ihl check below
 const IPPROTO_TCP: u8 = 6;
 const IPPROTO_UDP: u8 = 17;
+const TCP_HDR_MIN_LEN: usize = 20;
+const TCP_HDR_MAX_LEN: usize = 60;
+const UDP_HDR_LEN: usize = 8;
+const PAYLOAD_SNIPPET_LEN: usize = 128;
 
 // --- Minimal wire-format header structs ---
 // repr(C) with explicit byte widths so the layout matches the actual bytes
@@ -47,10 +51,26 @@ struct L4Ports {
     dst_port: u16,
 }
 
+/// Only the fields we need to compute the real TCP header length. The data
+/// offset (top 4 bits of byte 12, counted in 32-bit words) tells us where
+/// TCP options end and the actual payload begins — without this, a TCP
+/// packet with options would have its trailing header bytes miscounted
+/// as payload, polluting anything we later try to signature-match against.
+#[repr(C)]
+struct TcpHdr {
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack: u32,
+    data_offset_reserved: u8,
+    flags: u8,
+    window: u16,
+    checksum: u16,
+    urgent: u16,
+}
+
 /// Single-producer (kernel) -> multi-consumer (user-space) lockless ring.
 /// 256 KiB, power-of-two sized as required by BPF_MAP_TYPE_RINGBUF.
-/// Sized generously relative to a 24-byte PacketEvent so a burst of packets
-/// doesn't immediately fill the ring before user-space gets a chance to drain it.
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(1 << 18, 0);
 
@@ -110,11 +130,13 @@ fn try_vaporwall(ctx: XdpContext) -> Result<u32, ()> {
     let src_ip = u32::from_be(unsafe { (*ip_hdr).src_addr });
     let dst_ip = u32::from_be(unsafe { (*ip_hdr).dst_addr });
 
+    let l4_offset = ETH_HDR_LEN + IPV4_HDR_LEN;
+
     let (src_port, dst_port) = match protocol {
         IPPROTO_TCP | IPPROTO_UDP => {
             // SAFETY: same bounds-check contract as above, offset now points
             // past the fixed 20-byte IPv4 header (no options, checked above).
-            let l4_hdr: *const L4Ports = unsafe { ptr_at(&ctx, ETH_HDR_LEN + IPV4_HDR_LEN)? };
+            let l4_hdr: *const L4Ports = unsafe { ptr_at(&ctx, l4_offset)? };
             (
                 u16::from_be(unsafe { (*l4_hdr).src_port }),
                 u16::from_be(unsafe { (*l4_hdr).dst_port }),
@@ -122,6 +144,70 @@ fn try_vaporwall(ctx: XdpContext) -> Result<u32, ()> {
         }
         _ => (0, 0), // e.g. ICMP: no ports, report zero rather than garbage
     };
+
+    // Determine where the real payload starts, protocol-dependent. Getting
+    // this wrong means "payload" bytes are actually trailing L4 header/option
+    // bytes — silently poisoning any signature matching done downstream.
+    let payload_offset: Option<usize> = match protocol {
+        IPPROTO_TCP => {
+            let tcp_hdr: *const TcpHdr = unsafe { ptr_at(&ctx, l4_offset)? };
+            let data_offset = ((unsafe { (*tcp_hdr).data_offset_reserved } >> 4) as usize) * 4;
+
+            // A TCP header claiming less than the fixed 20-byte minimum or
+            // more than the 60-byte maximum (4-bit field, max value 15 * 4)
+            // is malformed — don't trust it as an offset into the packet.
+            if !(TCP_HDR_MIN_LEN..=TCP_HDR_MAX_LEN).contains(&data_offset) {
+                None
+            } else {
+                Some(l4_offset + data_offset)
+            }
+        }
+        IPPROTO_UDP => Some(l4_offset + UDP_HDR_LEN),
+        _ => None, // ICMP and others: no payload snippet captured in this MVP
+    };
+
+    let mut payload_snippet = [0u8; PAYLOAD_SNIPPET_LEN];
+    let mut snippet_len: u16 = 0;
+
+    if let Some(start) = payload_offset {
+        // SAFETY: bpf_xdp_load_bytes performs its own kernel-side bounds
+        // check of [start, start + PAYLOAD_SNIPPET_LEN) against the packet's
+        // actual length and simply returns a non-zero error code if that
+        // range would go out of bounds -- it never touches memory outside
+        // the packet, so no unsafe memory access can occur here regardless
+        // of what `start` is.
+        //
+        // We deliberately request a FIXED, compile-time-constant length
+        // (PAYLOAD_SNIPPET_LEN) here rather than a dynamically computed
+        // length based on (packet_len - start). That dynamic computation
+        // is what caused repeated verifier rejections: LLVM's optimizer
+        // proved the computed length was always >= 1 (correctly) and
+        // eliminated the explicit lower-bound clamp that was meant to make
+        // that fact visible to the verifier -- the verifier's own value-
+        // range tracking through the subtraction/min chain did not carry
+        // the same refinement, so it saw a possible zero-length read and
+        // rejected the call. A fixed constant length sidesteps this
+        // entirely: the verifier only needs to prove 128 > 0 (trivial) and
+        // that payload_snippet is at least 128 bytes (trivially true by
+        // construction), no packet-length arithmetic involved.
+        //
+        // Trade-off: packets with fewer than PAYLOAD_SNIPPET_LEN payload
+        // bytes will fail this call and get snippet_len = 0 (no signature
+        // match attempted). This is acceptable for the MVP; revisit if
+        // small-payload matching becomes a requirement.
+        let ret = unsafe {
+            aya_ebpf::helpers::bpf_xdp_load_bytes(
+                ctx.ctx,
+                start as u32,
+                payload_snippet.as_mut_ptr() as *mut core::ffi::c_void,
+                PAYLOAD_SNIPPET_LEN as u32,
+            )
+        };
+
+        if ret == 0 {
+            snippet_len = PAYLOAD_SNIPPET_LEN as u16;
+        }
+    }
 
     let payload_len = (ctx.data_end() - ctx.data()) as u32;
 
@@ -131,8 +217,10 @@ fn try_vaporwall(ctx: XdpContext) -> Result<u32, ()> {
         src_port,
         dst_port,
         protocol,
+        _reserved: 0,
+        snippet_len,
         payload_len,
-        _padding: 0,
+        payload_snippet,
     };
 
     // Reserve space in the ring buffer for this event. If the ring is full
