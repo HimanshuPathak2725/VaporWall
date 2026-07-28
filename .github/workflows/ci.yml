@@ -30,7 +30,7 @@ jobs:
           components: clippy
       - uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rust-src
+          components: rust-src, clippy
           default: false
       - name: Install bpf-linker
         run: cargo install bpf-linker
@@ -61,14 +61,3 @@ jobs:
         run: cargo run -p xtask -- build-ebpf
       - run: cargo build --workspace --exclude vaporwall-ebpf --verbose
       - run: cargo test --workspace --exclude vaporwall-ebpf --verbose
-
-  # eBPF programs must be verified/loaded on Linux with elevated capabilities.
-  # This job is a placeholder — enable once there's something to attach and
-  # a safe, self-contained target (e.g. a loopback interface or a synthetic
-  # packet source) to test against in CI.
-  # ebpf-smoke-test:
-  #   name: eBPF load/attach smoke test
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - run: sudo ./scripts/ci-smoke-test.sh
