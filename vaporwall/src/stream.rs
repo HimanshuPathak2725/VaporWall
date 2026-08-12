@@ -89,6 +89,21 @@ impl DirectionState {
     }
 
     fn ingest(&mut self, seq: u32, snippet: &[u8]) -> bool {
+        if snippet.is_empty() {
+            // Pure control packet (SYN/ACK/FIN with no data) or a packet
+            // whose payload capture returned nothing. Carries nothing to
+            // reassemble, and critically must NOT be used to bootstrap
+            // expected_seq: a SYN's sequence number is one less than the
+            // first real data byte (SYN consumes one sequence number per
+            // RFC 793), so bootstrapping off it misaligns expected_seq by
+            // exactly the SYN's cost, silently marking every subsequent
+            // real data packet as "out of order" and dropping the entire
+            // payload. Bug found via live loopback test (multi-segment
+            // EVIL_PAYLOAD split across two sends) — the SYN/ACK before
+            // the data was bootstrapping expected_seq one byte early.
+            return false;
+        }
+
         let Some(expected) = self.expected_seq else {
             self.expected_seq = Some(seq.wrapping_add(snippet.len() as u32));
             self.buffer.extend_from_slice(snippet);
@@ -231,5 +246,56 @@ impl StreamTable {
         if evicted > 0 {
             debug!("stream sweep evicted {} idle connection(s)", evicted);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for the SYN-bootstrap off-by-one bug: a zero-payload
+    /// packet (SYN/ACK) must never set expected_seq, or the very next real
+    /// data packet gets misclassified as out-of-order and silently dropped.
+    #[test]
+    fn empty_snippet_does_not_bootstrap_expected_seq() {
+        let mut dir = DirectionState::new();
+
+        // SYN: seq=100, no payload.
+        assert!(!dir.ingest(100, &[]));
+        assert_eq!(dir.expected_seq, None);
+
+        // Pure ACK: seq=101, no payload.
+        assert!(!dir.ingest(101, &[]));
+        assert_eq!(dir.expected_seq, None);
+
+        // First real data: seq=101 (SYN consumed seq 100), payload "hi".
+        assert!(dir.ingest(101, b"hi"));
+        assert_eq!(dir.expected_seq, Some(103));
+        assert_eq!(dir.buffer, b"hi");
+    }
+
+    #[test]
+    fn split_payload_reassembles_across_two_packets() {
+        let mut dir = DirectionState::new();
+        assert!(dir.ingest(1000, b"EVIL_PA"));
+        assert!(dir.ingest(1007, b"YLOAD"));
+        assert_eq!(dir.buffer, b"EVIL_PAYLOAD");
+    }
+
+    #[test]
+    fn out_of_order_packet_is_skipped_not_buffered() {
+        let mut dir = DirectionState::new();
+        assert!(dir.ingest(1000, b"AAAA"));
+        // Future packet (gap) — MVP scope: log and skip.
+        assert!(!dir.ingest(1010, b"BBBB"));
+        assert_eq!(dir.buffer, b"AAAA");
+    }
+
+    #[test]
+    fn duplicate_retransmit_is_skipped() {
+        let mut dir = DirectionState::new();
+        assert!(dir.ingest(1000, b"AAAA"));
+        assert!(!dir.ingest(1000, b"AAAA"));
+        assert_eq!(dir.buffer, b"AAAA");
     }
 }
