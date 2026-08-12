@@ -12,8 +12,12 @@ pub struct PacketEvent {
     //   would otherwise be invisible compiler padding
     pub snippet_len: u16,           // offset 14, size 2
     pub payload_len: u32,           // offset 16, size 4
-    pub payload_snippet: [u8; 128], // offset 20, size 128
+    pub seq: u32,                   // offset 20, size 4  -- TCP sequence
+    //   number of the first byte of payload_snippet. 0 for non-TCP
+    //   protocols (UDP/ICMP), where it has no meaning.
+    pub payload_snippet: [u8; 128], // offset 24, size 128
 }
+// Total size: 152 bytes, 4-byte aligned, zero trailing padding.
 
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for PacketEvent {}
