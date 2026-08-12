@@ -1,3 +1,5 @@
+mod stream;
+
 use aho_corasick::AhoCorasick;
 use anyhow::Context;
 use aya::{
@@ -14,26 +16,16 @@ use std::os::fd::AsRawFd;
 use tokio::io::unix::AsyncFd;
 use vaporwall_common::PacketEvent;
 
+use crate::stream::{IngestResult, StreamTable};
+
 #[derive(Parser)]
 struct Opt {
-    /// Interface to attach XDP program to. In Codespaces, use "lo" — no real NIC available.
     #[clap(short, long, default_value = "lo")]
     iface: String,
 }
 
-/// Placeholder MVP signature set. These are deliberately generic/testable
-/// strings, not real threat signatures — the point of this phase is proving
-/// the Aho-Corasick fast path wires up end-to-end (automaton build once,
-/// scan every packet's payload snippet in a single pass). Real signatures
-/// (SQLi tokens, shellcode NOP sleds, known exploit headers) come from the
-/// `rules/signatures.txt` file referenced in the README, which is a later
-/// phase's concern — loading and hot-reloading a rules file is a separate
-/// piece of work from the matching engine itself.
 const TEST_SIGNATURES: &[&str] = &["EVIL_PAYLOAD", "malicious_string", "/etc/passwd"];
 
-/// Builds the Aho-Corasick automaton once at startup. Building is the
-/// expensive part (proportional to total pattern bytes); matching against
-/// it afterward is fast and does not re-walk the pattern set per packet.
 fn build_signature_matcher() -> anyhow::Result<AhoCorasick> {
     AhoCorasick::new(TEST_SIGNATURES).context("failed to build Aho-Corasick automaton")
 }
@@ -90,6 +82,9 @@ async fn main() -> anyhow::Result<()> {
         AsyncFd::new(raw_fd).context("failed to register ring buffer fd with the async reactor")?;
     let mut ring_buf = ring_buf;
 
+    let mut streams = StreamTable::new();
+    let mut sweep_interval = tokio::time::interval(std::time::Duration::from_secs(5));
+
     info!("Polling ring buffer for packet events (epoll-driven)...");
 
     let shutdown = tokio::signal::ctrl_c();
@@ -112,41 +107,54 @@ async fn main() -> anyhow::Result<()> {
                     }
                     // SAFETY: PacketEvent is #[repr(C)] with no padding
                     // ambiguity, and both vaporwall-ebpf and vaporwall share
-                    // this exact definition via vaporwall-common — sound
-                    // reinterpretation of kernel-submitted bytes.
+                    // this exact definition via vaporwall-common.
                     let event: PacketEvent =
                         unsafe { core::ptr::read_unaligned(item.as_ptr() as *const PacketEvent) };
 
                     info!(
-                        "{}:{} -> {}:{} proto={} len={}",
+                        "{}:{} -> {}:{} proto={} len={} seq={}",
                         Ipv4Addr::from(event.src_ip),
                         event.src_port,
                         Ipv4Addr::from(event.dst_ip),
                         event.dst_port,
                         event.protocol,
-                        event.payload_len
+                        event.payload_len,
+                        event.seq
                     );
 
-                    // Fast-path scan: only the captured snippet, only up to
-                    // the kernel-reported valid length (trailing bytes in
-                    // the fixed-size array are zero-padding, not real data).
                     let snippet_len = (event.snippet_len as usize).min(event.payload_snippet.len());
                     let snippet = &event.payload_snippet[..snippet_len];
 
-                    if let Some(mat) = matcher.find(snippet) {
-                        let pattern = TEST_SIGNATURES[mat.pattern().as_usize()];
-                        warn!(
-                            "SIGNATURE MATCH: pattern=\"{}\" src={}:{} dst={}:{}",
-                            pattern,
-                            Ipv4Addr::from(event.src_ip),
-                            event.src_port,
-                            Ipv4Addr::from(event.dst_ip),
-                            event.dst_port
-                        );
+                    match streams.ingest(
+                        event.src_ip,
+                        event.src_port,
+                        event.dst_ip,
+                        event.dst_port,
+                        event.protocol,
+                        event.seq,
+                        snippet,
+                    ) {
+                        IngestResult::Scan(buf) => {
+                            if let Some(mat) = matcher.find(buf) {
+                                let pattern = TEST_SIGNATURES[mat.pattern().as_usize()];
+                                warn!(
+                                    "SIGNATURE MATCH (reassembled): pattern=\"{}\" src={}:{} dst={}:{}",
+                                    pattern,
+                                    Ipv4Addr::from(event.src_ip),
+                                    event.src_port,
+                                    Ipv4Addr::from(event.dst_ip),
+                                    event.dst_port
+                                );
+                            }
+                        }
+                        IngestResult::Skipped | IngestResult::TableFull => {}
                     }
                 }
 
                 guard.clear_ready();
+            }
+            _ = sweep_interval.tick() => {
+                streams.sweep_expired();
             }
             _ = &mut shutdown => {
                 info!("Ctrl-C received, shutting down...");
