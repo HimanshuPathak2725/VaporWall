@@ -12,6 +12,29 @@
 //! README's max_payload_buffer_bytes=1MB default assumes full-payload
 //! capture we do not have; using it here would let 65536 streams reserve
 //! up to 64 GB combined. We cap much lower.
+//!
+//! TODO(security/correctness): the eBPF capture layer requests a FIXED
+//! 128-byte read via bpf_xdp_load_bytes (see vaporwall-ebpf's
+//! PAYLOAD_SNIPPET_LEN comment for why — a verifier constraint, not a
+//! design preference). Any packet whose real TCP payload is SHORTER than
+//! 128 bytes fails that call entirely and arrives here with
+//! snippet_len=0, indistinguishable from a genuine zero-payload control
+//! packet (SYN/ACK/FIN). DirectionState::ingest treats all zero-length
+//! snippets as "nothing to track" and does not advance expected_seq for
+//! them — correct for real control packets, but for a genuine small DATA
+//! packet this means expected_seq silently stops tracking that segment's
+//! bytes, and the *next* successfully-captured packet's seq will no
+//! longer line up with expected_seq, permanently desyncing that
+//! direction's reassembly (every later packet gets misclassified as
+//! out-of-order and dropped) until the connection is evicted and a fresh
+//! stream starts. This is a real evasion/reliability gap: attackers
+//! (or just ordinary small requests, e.g. short HTTP verbs/headers) can
+//! desync a stream by sending payloads under 128 bytes. NOT fixed here —
+//! needs either (a) a tcp_payload_len field carried in PacketEvent
+//! independent of snippet capture success, so expected_seq can still
+//! advance correctly even on a failed/undersized capture, or (b) a lower
+//! or dynamic capture floor on the eBPF side. Revisit in a follow-up
+//! phase; out of scope for the Phase 4 MVP.
 
 use std::collections::HashMap;
 use std::time::Instant;
