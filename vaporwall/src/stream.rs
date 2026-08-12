@@ -145,6 +145,22 @@ impl ConnectionState {
     }
 }
 
+/// Bundles one packet's identifying/reassembly-relevant fields into a
+/// single argument. Replaces a previous 8-parameter `ingest()` signature
+/// that clippy correctly flagged (`too_many_arguments`) — grouping these
+/// also means a future field (e.g. TCP flags for SYN/FIN-aware state
+/// transitions) is a one-place change, not a signature change at every
+/// call site.
+pub struct PacketMeta<'a> {
+    pub src_ip: u32,
+    pub src_port: u16,
+    pub dst_ip: u32,
+    pub dst_port: u16,
+    pub protocol: u8,
+    pub seq: u32,
+    pub snippet: &'a [u8],
+}
+
 /// Single-owner, single-task — no locking. If the consumer ever moves to
 /// multiple worker tasks, this needs Arc<Mutex<StreamTable>> (or sharding)
 /// at that point, not before.
@@ -165,18 +181,14 @@ impl StreamTable {
         }
     }
 
-    pub fn ingest<'a>(
-        &'a mut self,
-        src_ip: u32,
-        src_port: u16,
-        dst_ip: u32,
-        dst_port: u16,
-        protocol: u8,
-        seq: u32,
-        snippet: &[u8],
-    ) -> IngestResult<'a> {
-        let (key, direction) =
-            ConnectionKey::from_packet(src_ip, src_port, dst_ip, dst_port, protocol);
+    pub fn ingest<'a>(&'a mut self, pkt: PacketMeta<'_>) -> IngestResult<'a> {
+        let (key, direction) = ConnectionKey::from_packet(
+            pkt.src_ip,
+            pkt.src_port,
+            pkt.dst_ip,
+            pkt.dst_port,
+            pkt.protocol,
+        );
 
         if !self.connections.contains_key(&key) {
             if self.connections.len() >= MAX_TRACKED_STREAMS {
@@ -189,7 +201,10 @@ impl StreamTable {
             self.connections.insert(key, ConnectionState::new());
         }
 
-        let conn = self.connections.get_mut(&key).expect("just inserted or existed");
+        let conn = self
+            .connections
+            .get_mut(&key)
+            .expect("just inserted or existed");
         conn.last_activity = Instant::now();
 
         let dir_state = match direction {
@@ -197,7 +212,7 @@ impl StreamTable {
             Direction::Reverse => &mut conn.reverse,
         };
 
-        if dir_state.ingest(seq, snippet) {
+        if dir_state.ingest(pkt.seq, pkt.snippet) {
             IngestResult::Scan(&dir_state.buffer)
         } else {
             IngestResult::Skipped

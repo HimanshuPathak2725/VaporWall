@@ -125,15 +125,15 @@ async fn main() -> anyhow::Result<()> {
                     let snippet_len = (event.snippet_len as usize).min(event.payload_snippet.len());
                     let snippet = &event.payload_snippet[..snippet_len];
 
-                    match streams.ingest(
-                        event.src_ip,
-                        event.src_port,
-                        event.dst_ip,
-                        event.dst_port,
-                        event.protocol,
-                        event.seq,
+                    match streams.ingest(stream::PacketMeta {
+                        src_ip: event.src_ip,
+                        src_port: event.src_port,
+                        dst_ip: event.dst_ip,
+                        dst_port: event.dst_port,
+                        protocol: event.protocol,
+                        seq: event.seq,
                         snippet,
-                    ) {
+                    }) {
                         IngestResult::Scan(buf) => {
                             if let Some(mat) = matcher.find(buf) {
                                 let pattern = TEST_SIGNATURES[mat.pattern().as_usize()];
