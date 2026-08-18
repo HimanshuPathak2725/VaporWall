@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/logo.png" alt="VaporWall Logo" width="260"/>
+
 # VaporWall
 
 **High-Performance eBPF Kernel Firewall & Asynchronous Deep Packet Threat Analyzer**
