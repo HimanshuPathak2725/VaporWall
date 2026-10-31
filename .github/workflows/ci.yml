@@ -30,9 +30,12 @@ jobs:
           components: clippy
       - uses: dtolnay/rust-toolchain@nightly
         with:
+          toolchain: nightly-2026-08-11
           components: rust-src, clippy
       - name: Install bpf-linker
-        run: cargo install bpf-linker
+        uses: taiki-e/install-action@v2
+        with:
+          tool: bpf-linker@0.12.0
       - uses: Swatinem/rust-cache@v2
       - name: Build eBPF bytecode
         # Required before building/clippy-ing vaporwall: it embeds this
@@ -43,7 +46,7 @@ jobs:
         run: rustup default stable
       - run: cargo clippy --workspace --exclude vaporwall-ebpf --all-targets --all-features -- -D warnings
       - name: Clippy (eBPF crate, its own target)
-        run: cd vaporwall-ebpf && cargo +nightly clippy -- -D warnings
+        run: cd vaporwall-ebpf && cargo +nightly-2026-08-11 clippy -- -D warnings
 
   test:
     name: Build & test
@@ -53,9 +56,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: dtolnay/rust-toolchain@nightly
         with:
+          toolchain: nightly-2026-08-11
           components: rust-src
       - name: Install bpf-linker
-        run: cargo install bpf-linker
+        uses: taiki-e/install-action@v2
+        with:
+          tool: bpf-linker@0.12.0
       - uses: Swatinem/rust-cache@v2
       - name: Build eBPF bytecode
         run: cargo run -p xtask -- build-ebpf

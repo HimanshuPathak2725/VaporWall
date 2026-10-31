@@ -15,7 +15,7 @@ fn main() -> Result<()> {
 fn build_ebpf(release: bool) -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.current_dir("vaporwall-ebpf")
-        .arg("+nightly")
+        .arg("+nightly-2026-08-11")
         .arg("build")
         .arg("-Z")
         .arg("build-std=core");
@@ -33,7 +33,7 @@ fn build_ebpf(release: bool) -> Result<()> {
     }
 
     println!(
-        "eBPF bytecode built at: vaporwall-ebpf/target/bpfel-unknown-none/{}/vaporwall",
+        "eBPF bytecode built at: target/bpfel-unknown-none/{}/vaporwall",
         if release { "release" } else { "debug" }
     );
     Ok(())

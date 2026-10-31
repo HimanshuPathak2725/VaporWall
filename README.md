@@ -183,7 +183,7 @@ Building and executing VaporWall requires specific systems-level toolchains and 
 
 | Parameter | Required Specification |
 | :--- | :--- |
-| **Operating System** | Linux Kernel 5.8+ (Kernel 6.x recommended for RingBuf enhancements) |
+| **Operating System** | Linux Kernel 5.18+ (Kernel 6.x recommended for RingBuf enhancements) |
 | **Architecture** | x86_64 or aarch64 |
 | **User Privileges** | Root or `CAP_BPF`, `CAP_NET_ADMIN`, `CAP_SYS_ADMIN` capability flags |
 

@@ -3,7 +3,7 @@ use anyhow::Context;
 use aya::{
     include_bytes_aligned,
     maps::RingBuf,
-    programs::{Xdp, XdpFlags},
+    programs::{Xdp, XdpMode},
     Ebpf,
 };
 use clap::Parser;
@@ -69,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
             .load()
             .context("verifier rejected the program — check dmesg/RUST_LOG=debug for details")?;
 
-        program.attach(&opt.iface, XdpFlags::SKB_MODE).context(
+        program.attach(&opt.iface, XdpMode::Skb).context(
             "failed to attach XDP program — do you have CAP_BPF/CAP_NET_ADMIN? try running with sudo",
         )?
     };
